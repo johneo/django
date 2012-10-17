@@ -4,8 +4,7 @@ from django.db.backends.postgresql_psycopg2.creation import DatabaseCreation
 
 class PostGISCreation(DatabaseCreation):
     geom_index_type = 'GIST'
-    geom_index_ops = 'GIST_GEOMETRY_OPS'
-    geom_index_ops_nd = 'GIST_GEOMETRY_OPS_ND'
+    geom_index_opts = 'GIST_GEOMETRY_OPS'
 
     def sql_indexes_for_field(self, model, f, style):
         "Return any spatial index creation SQL for the field."
@@ -18,9 +17,8 @@ class PostGISCreation(DatabaseCreation):
             qn = self.connection.ops.quote_name
             db_table = model._meta.db_table
 
-            if f.geography or self.connection.ops.geometry:
-                # Geography and Geometry (PostGIS 2.0+) columns are
-                # created normally.
+            if f.geography:
+                # Geogrophy columns are created normally.
                 pass
             else:
                 # Geometry columns are created by `AddGeometryColumn`
@@ -49,23 +47,33 @@ class PostGISCreation(DatabaseCreation):
                 # which are fast on multidimensional cases, or just plain
                 # gist index for the 2d case.
                 if f.geography:
-                    index_ops = ''
-                elif self.connection.ops.geometry:
+                    index_opts = ''
+                elif self.connection.ops.spatial_version >= (2, 0):
                     if f.dim > 2:
-                        index_ops = ' ' + style.SQL_KEYWORD(self.geom_index_ops_nd)
+                        index_opts = ' ' + style.SQL_KEYWORD('gist_geometry_ops_nd')
                     else:
-                        index_ops = ''
+                        index_opts = ''
                 else:
-                    index_ops = ' ' + style.SQL_KEYWORD(self.geom_index_ops)
+                    index_opts = ' ' + style.SQL_KEYWORD(self.geom_index_opts)
                 output.append(style.SQL_KEYWORD('CREATE INDEX ') +
                               style.SQL_TABLE(qn('%s_%s_id' % (db_table, f.column))) +
                               style.SQL_KEYWORD(' ON ') +
                               style.SQL_TABLE(qn(db_table)) +
                               style.SQL_KEYWORD(' USING ') +
                               style.SQL_COLTYPE(self.geom_index_type) + ' ( ' +
-                              style.SQL_FIELD(qn(f.column)) + index_ops + ' );')
+                              style.SQL_FIELD(qn(f.column)) + index_opts + ' );')
         return output
 
     def sql_table_creation_suffix(self):
+        cursor = self.connection.cursor()
+        cursor.execute('SELECT datname FROM pg_database;')
+        db_names = [row[0] for row in cursor.fetchall()]
         postgis_template = getattr(settings, 'POSTGIS_TEMPLATE', 'template_postgis')
-        return ' TEMPLATE %s' % self.connection.ops.quote_name(postgis_template)
+
+        if postgis_template in db_names:
+            qn = self.connection.ops.quote_name
+            return ' TEMPLATE %s' % qn(postgis_template)
+        elif self.connection.ops.spatial_version < (2, 0):
+            raise ImproperlyConfigured("Template database '%s' does not exist." % postgis_template)
+        else:
+            return ''
